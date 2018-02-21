@@ -1,4 +1,5 @@
-#!/usr/bin/env python
+#!/usr/bin/python
+# -*- coding: UTF-8 -*-
 from __future__ import division, unicode_literals
 import argparse
 import random
@@ -8,13 +9,12 @@ import sys
 from copy import copy
 from math import log10, isnan
 from collections import Counter, OrderedDict, defaultdict, deque
-
+from xtok import tokenize
 
 """
 @description    n-grams, perplexity, and perplexity-based classification
 @author         Favian Contreras <fnc4@cornell.edu>
 """
-
 
 class Wrapper:
     """
@@ -177,13 +177,14 @@ class Ngrams:
         if typ < 2:
             # Put the leftover start tokens in the beginning
             tmp = string.split()
-            tokens = []
-            for i in range_wrap(n-1):
-                tokens.append(tmp.pop())
-            tokens.extend(tmp)
-
-            if not typ:
-                self.train_len = len(tokens)
+            tokens = tmp
+            # tokens = []
+            # for i in range_wrap(n-1):
+            #     tokens.append(tmp.pop())
+            # tokens.extend(tmp)
+            #
+            # if not typ:
+            #     self.train_len = len(tokens)
             return tokens, string
 
         tokens = list_wrap(filter(bool, string.split('\n')))
@@ -338,7 +339,7 @@ class Ngrams:
             freq_tmp = freq_dict
             count_tmp = self.total_words[wrd]
 
-            # Walk through the dicts with the words
+            # Walk through the dicts with the following words
             for word in words[:-3]:
                 if not freq_tmp or not freq_tmp[word]:
                     freq_tmp[word] = defaultdict(dict)
@@ -372,15 +373,19 @@ class Ngrams:
             tokens, _ = self.top_lvl_unk_tokenize(self.total_words, tokens)
 
         dict_type = dict if n > 3 else int
+        # initialize empty dicts
         self.total_words = {token: defaultdict(dict_type) for token in tokens}
         word_freq_pairs = {token: defaultdict(dict) for token in tokens}
 
+        # contains tokens that follow the current one
         words_infront = []
         for word in tokens[1:self.n]:
             words_infront.append(word)
 
         # Count the ngrams as reading the tokens
         for i, token in enumerate(tokens[:-self.n]):
+            # Create nested dicts which store the chain of words. If the dict is already
+            # created, just add a 1 to the value inside. Nesting level equals to n
             self.dict_creator(word_freq_pairs[token], token, words_infront)
             del words_infront[0]
             words_infront.append(tokens[i+self.n])
@@ -447,6 +452,9 @@ class Ngrams:
 
         # Iterative walk using "stack," marginally faster than recursion
         # Iterative walk using "queue" is much slower due to struct of dicts
+        # We go to the bottom and then rescale the probabilities.
+        # total_words has nesting 1 level lower than word_freq_pairs since
+        # it is needed in smothing
         while stack:
             word_freq_pairs, total_words, my_n = stack.pop()
             if my_n == 2:
@@ -677,8 +685,14 @@ class Ngrams:
     def n_laplace_perplex(self, tokens, ngrams, total_words, types, n):
         help_dict = ngrams
         if n == 1:
-            return log10(help_dict.get(tokens[0], self.alpha /
-                                                  (total_words+types)))
+            if self.alpha == 0:
+                return -100000000000
+            else:
+                default = self.alpha / (total_words+types)
+            try:
+                return log10(help_dict.get(tokens[0], default))
+            except:
+                return default
 
         nxt_token = tokens.popleft()
         if nxt_token in help_dict:
@@ -691,6 +705,9 @@ class Ngrams:
             total = self.sum_count(help_dict.values())
             sum_dict[hash(''.join(help_dict.keys()))] = total
         """
+        if self.alpha == 0:
+            # really big negative number for log means almost zero for proba
+            return -1000000000000000
         # small "punishment" for not being in it (100), real approx is too slow
         return log10(self.alpha / (100 + types))
 
@@ -706,6 +723,7 @@ class Ngrams:
         num_tokens = len(tokens)
         words = deque(tokens[:n])
         range_wrap = xrange if self.python2 else range
+        # cycle by the amount of ngrams in text to be processed
         for i in range_wrap(num_tokens - n):
             entropy -= self.n_laplace_perplex(copy(words), ngram, tw, types, n)
             del words[0]
@@ -713,6 +731,48 @@ class Ngrams:
         entropy -= self.n_laplace_perplex(words, ngram, tw, types, n)
 
         return 10**(entropy / (num_tokens - (n-1)))
+
+    def phrase_proba(self, string, n = None):
+        # sum_dict = {}
+        if not n:
+            n = self.n
+        tokens, _ = self.processFile(n, 1, string)
+        types = self.types
+        ngram = self.ngrams
+        tw = self.total_words
+
+        if len(tokens) < n:
+            print("Phrase too small!")
+            return 0.0
+
+        # retrieve the probability of the first ngram
+        firstWords = tokens[:n-1]
+        nestedDict = tw
+        nestedProbas = ngram
+        try:
+            # stop just before obtaining number
+            for word in firstWords:
+                nestedProbas = nestedProbas[word]
+                nestedDict = nestedDict[word]
+            proba = nestedProbas[tokens[n-1]] * nestedDict / len(tw)
+        except:
+            print("No first ngram found")
+            try:
+                proba = float(self.alpha) / self.types
+            except:
+                proba = 0.0
+        num_tokens = len(tokens)
+        words = deque(tokens[:n])
+        range_wrap = xrange if self.python2 else range
+        # cycle by the amount of ngrams in text to be processed
+        log10proba = 0.0
+        for i in range_wrap(num_tokens - n):
+            log10proba += self.n_laplace_perplex(copy(words), ngram, tw, types, n)
+            del words[0]
+            words.append(tokens[i + n])
+        log10proba += self.n_laplace_perplex(words, ngram, tw, types, n)
+
+        return (10 ** log10proba) * proba
 
 
 def parse_args():
@@ -967,6 +1027,62 @@ def main():
 
         with open(opts.output_file, 'w') as guesses:
             guesses.write('\n'.join(predictions))
+#
+# if __name__ == '__main__':
+#     main()
+# opts = parse_args()
 
-if __name__ == '__main__':
-    main()
+
+n = 3
+train_str = test_str = None
+class opts:
+    turing = False
+    laplace = 0.001
+    threshold = 0.0
+    n = n
+    training_set = "kim.train"
+    # training_set = "small.train"
+    test_set = "perplexity.test"
+    # test_set = "small.train"
+    classify = False
+    perplexity = False
+gts = opts.turing
+
+model = Ngrams(opts)
+
+train_str, word_freq_pairs, total_words = model.init(n, 1, train_str)
+finish_model(model, n, gts, word_freq_pairs, total_words, model.types)
+phrases = [
+    'большей степени - сосочковых',
+    'одна из редких преимущественно доброкачественных разновидностей',
+    'синдром относится в оперативной гастроэнтерологии',
+    'Основными факторами, приводящими к патологической',
+    'высокой частотой развития застоя молока',
+    'Потребность во сне практически полностью исчезает',
+    # now fragments that are not present in the train text
+    'далее то, чего нет в тексте',
+    'несколько разновидностей паразитов обитают',
+    'степень поражения зависит от мощности',
+    'степень зависит от поражения мощности',
+    'гастроэнтерологические исследования ни к чему не привели',
+    'паталогические изменения возможны только',
+    'сон резко изменяет потребность',
+    'сон резко меняет потребность',
+    'резко сон меняет потребность',
+    'коса нашла на камень и затупилась',
+    'затупилась коса и нашла на камень',
+    'затупилась коса камень нашла и на',
+    'пять привет вокал пока человек',
+]
+for phrase in phrases:
+    print("P(",phrase,") = ",model.phrase_proba(phrase))
+
+test_t, test_str = model.processFile(n, 1, None)
+if n == 1:
+    perplexity = model.uni_perplex(test_t, gts)
+elif n == 2:
+    perplexity = model.bi_perplex(test_t, gts)
+else:
+    perplexity = model.n_laplace_perplex_help(test_t, n)
+print("Size of learn sample: ", len(total_words)," while size of perplexity sample is ", len(test_t))
+print("Perplexity: " + str(perplexity))
